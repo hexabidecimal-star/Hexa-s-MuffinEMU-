@@ -164,7 +164,7 @@ bool PPCRecompiler_readTXMEnvVar()
 static void PPCRecompiler_finishJitMappingSession()
 {
 	static bool s_detached = false;
-    if (PPCRecompiler_readTXMEnvVar())
+    if (PPCRecompiler_readTXMEnvVar() && !s_detached)
     {
 		s_detached = true;
         cemuLog_log(LogType::Force, "Recompiler: detaching TXM debugger after JIT mapping");
