@@ -1319,8 +1319,10 @@ bool PPCRecompiler_Init26() {
         // buy is speed beyond that - once the arena comfortably holds a title's working
         // set of translated code, more room does nothing at all, so this is a ceiling
         // being raised rather than a dial being turned up.
+		//
+		// 3 GiB does not seem to work for me, so I'm reverting this back to 1 GiB.
+		// Old code: 3072 * kMB, 2560 * kMB, 2048 * kMB, 1536 * kMB
         constexpr size_t kArenaSizes[] = {
-            3072 * kMB, 2560 * kMB, 2048 * kMB, 1536 * kMB,
             1024 * kMB, 512 * kMB, 256 * kMB, 128 * kMB, 64 * kMB
         };
         size_t chosenArena = 0;
