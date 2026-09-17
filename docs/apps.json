@@ -19,6 +19,14 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "1.6",
+          "date": "2026-09-17T23:54:23Z",
+          "localizedDescription": "## What changed\n\n- Add files via upload\n- Add files via upload\n- Add files via upload\n\nMuffinEMU, Wii U emulation for iPhone and iPad, built from commit c4bb09617e8fc19a7f3f3d19b64c503c7a38ceb3.\n\n**`MuffinEMU.ipa`** - SideStore / AltStore / LiveContainer. Unsigned; they re-sign\nwith your own Apple ID at install.\n\n**`MuffinEMU-fakesigned.ipa`** - TrollStore or jailbroken only, with the JIT\nentitlements embedded.\n\nThe recompiler needs a JIT enabler (StikJIT, SideStore, LiveContainer) and the\n\"Use the recompiler (JIT)\" switch in Settings; without both it runs the\ninterpreter. `MuffinEMU.app.dSYM.zip` is only needed to symbolicate a crash report.\n\nMuffinEMU is built on Cemu. Some MeloCafe cores and bug fixes have been brought over to MuffinEMU.\n\n**Full changelog**: https://github.com/hexabidecimal-star/Hexa-s-MuffinEMU-/compare/v1.5...v1.6",
+          "downloadURL": "https://github.com/hexabidecimal-star/Hexa-s-MuffinEMU-/releases/download/v1.6/MuffinEMU.ipa",
+          "size": 67706568,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "1.5",
           "date": "2026-09-17T23:15:18Z",
           "localizedDescription": "## What changed\n\n- New and hopefully final metal diagnoser\n\nMuffinEMU, Wii U emulation for iPhone and iPad, built from commit 8c417be6b8b53038f894c0b885a6fe74b5a89dd0.\n\n**`MuffinEMU.ipa`** - SideStore / AltStore / LiveContainer. Unsigned; they re-sign\nwith your own Apple ID at install.\n\n**`MuffinEMU-fakesigned.ipa`** - TrollStore or jailbroken only, with the JIT\nentitlements embedded.\n\nThe recompiler needs a JIT enabler (StikJIT, SideStore, LiveContainer) and the\n\"Use the recompiler (JIT)\" switch in Settings; without both it runs the\ninterpreter. `MuffinEMU.app.dSYM.zip` is only needed to symbolicate a crash report.\n\nMuffinEMU is built on Cemu. Some MeloCafe cores and bug fixes have been brought over to MuffinEMU.\n\n**Full changelog**: https://github.com/hexabidecimal-star/Hexa-s-MuffinEMU-/compare/v1.4...v1.5",
