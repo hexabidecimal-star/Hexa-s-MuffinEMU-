@@ -1,17 +1,26 @@
 diff --git a/src/Cafe/HW/Latte/Core/LatteCommandProcessor.cpp b/src/Cafe/HW/Latte/Core/LatteCommandProcessor.cpp
-index 14dd7661..227bf346 100644
+index 14dd7661..692c1729 100644
 --- a/src/Cafe/HW/Latte/Core/LatteCommandProcessor.cpp
 +++ b/src/Cafe/HW/Latte/Core/LatteCommandProcessor.cpp
-@@ -1362,6 +1362,8 @@ void LatteCP_processCommandBuffer(DrawPassContext& drawPassCtx)
+@@ -168,6 +168,7 @@ uint32 LatteCP_readU32Deprc()
+ 			LatteThread_Exit();
+ 
+ 		// still no command data available, do some other tasks
++		g_diagCPIdleSpins.fetch_add(1, std::memory_order_relaxed); // MTLDIAG
+ 		LatteTiming_HandleTimedVsync();
+ 		LatteAsyncCommands_checkAndExecute();
+ 		std::this_thread::yield();
+@@ -1362,6 +1363,9 @@ void LatteCP_processCommandBuffer(DrawPassContext& drawPassCtx)
  	}
  }
  
-+std::atomic<uint64> g_diagCPPackets{0}; // MTLDIAG
++std::atomic<uint64> g_diagCPPackets{0};   // MTLDIAG
++std::atomic<uint64> g_diagCPIdleSpins{0}; // MTLDIAG
 +
  void LatteCP_ProcessRingbuffer()
  {
  	sint32 timerRecheck = 0; // estimates how much CP processing time has elapsed based on the executed commands, if the value exceeds CP_TIMER_RECHECK then _handleTimers() is called
-@@ -1369,6 +1371,7 @@ void LatteCP_ProcessRingbuffer()
+@@ -1369,6 +1373,7 @@ void LatteCP_ProcessRingbuffer()
  	while (true)
  	{
  		uint32 itHeader = LatteCP_readU32Deprc();
@@ -44,21 +53,21 @@ index e262919e..57fd8b27 100644
  	}
  
 diff --git a/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp b/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp
-index 89de62bd..1259f748 100644
+index 89de62bd..f86a8ff4 100644
 --- a/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp
 +++ b/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp
-@@ -26,6 +26,141 @@
+@@ -26,6 +26,142 @@
  
  #include <cstring>
  
 +// ---- MTLDIAG: temporary diagnostics, remove when done ----
-+#include <execinfo.h>
 +#include <pthread.h>
-+#include <signal.h>
++#include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
 +
 +extern uint32 g_diagScanCopyCalls;
 +extern uint32 g_diagScanCopyNoView;
 +extern std::atomic<uint64> g_diagCPPackets;
++extern std::atomic<uint64> g_diagCPIdleSpins;
 +namespace GX2
 +{
 +    extern std::atomic<uint32> g_diagFlipWaitEnter;
@@ -87,8 +96,6 @@ index 89de62bd..1259f748 100644
 +    std::atomic<uint32> g_mtlStage{0};
 +    std::atomic<uint64> g_mtlStageTicks{0};
 +    std::atomic<uintptr_t> g_mtlStageThread{0};
-+    void* g_mtlStallFrames[64];
-+    std::atomic<int> g_mtlStallFrameCount{-1};
 +    std::atomic<uint64> g_mtlTotalSwaps{0};
 +    std::atomic<bool> g_mtlWatchdogStarted{false};
 +
@@ -99,38 +106,43 @@ index 89de62bd..1259f748 100644
 +        g_mtlStageTicks.fetch_add(1, std::memory_order_relaxed);
 +    }
 +
-+    // Runs on the stalled thread itself: record where it is, nothing more.
-+    void MtlStallSignalHandler(int)
++    const char* MtlGuestThreadState(coreinit::OSThread_t::THREAD_STATE state)
 +    {
-+        const int n = backtrace(g_mtlStallFrames, 64);
-+        g_mtlStallFrameCount.store(n, std::memory_order_release);
++        switch (state)
++        {
++        case coreinit::OSThread_t::THREAD_STATE::STATE_NONE: return "none";
++        case coreinit::OSThread_t::THREAD_STATE::STATE_READY: return "ready";
++        case coreinit::OSThread_t::THREAD_STATE::STATE_RUNNING: return "RUNNING";
++        case coreinit::OSThread_t::THREAD_STATE::STATE_WAITING: return "waiting";
++        case coreinit::OSThread_t::THREAD_STATE::STATE_MORIBUND: return "moribund";
++        default: return "?";
++        }
 +    }
 +
-+    void MtlDumpStalledThread()
++    // What the game's own threads are doing while the GPU side has nothing to do.
++    void MtlDumpGuestThreads(uint32 snapshot)
 +    {
-+        const uintptr_t threadHandle = g_mtlStageThread.load(std::memory_order_relaxed);
-+        if (!threadHandle)
-+            return;
-+        g_mtlStallFrameCount.store(-1, std::memory_order_release);
-+        if (pthread_kill((pthread_t)threadHandle, SIGUSR1) != 0)
++        srwlock_activeThreadList.LockRead();
++        const sint32 count = activeThreadCount;
++        cemuLog_log(LogType::Force, "MTLWATCH guest thread snapshot {} ({} threads)", snapshot, count);
++        for (sint32 i = 0; i < count && i < 64; i++)
 +        {
-+            cemuLog_log(LogType::Force, "MTLWATCH could not signal the stalled thread");
-+            return;
++            MPTR threadMPTR = activeThread[i];
++            if (!threadMPTR)
++                continue;
++            coreinit::OSThread_t* thread = (coreinit::OSThread_t*)memory_getPointerFromVirtualOffset(threadMPTR);
++            if (!thread)
++                continue;
++            const char* name = thread->threadName.GetPtr() ? thread->threadName.GetPtr() : "<unnamed>";
++            cemuLog_log(LogType::Force,
++                "MTLWATCH   thread {:08x} id={} core={} prio={} state={} suspend={} waitQueue={:08x} waitMutex={:08x} pc={:08x} lr={:08x} name={}",
++                threadMPTR, (uint32)thread->id, (uint32)thread->context.upir, (sint32)thread->effectivePriority,
++                MtlGuestThreadState((coreinit::OSThread_t::THREAD_STATE)thread->state),
++                (sint32)thread->suspendCounter,
++                thread->currentWaitQueue.GetMPTR(), thread->waitingForMutex.GetMPTR(),
++                (uint32)thread->context.srr0, _swapEndianU32(thread->context.lr), name);
 +        }
-+        for (int i = 0; i < 100 && g_mtlStallFrameCount.load(std::memory_order_acquire) < 0; i++)
-+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-+        const int count = g_mtlStallFrameCount.load(std::memory_order_acquire);
-+        if (count <= 0)
-+        {
-+            cemuLog_log(LogType::Force, "MTLWATCH stalled thread did not answer the signal");
-+            return;
-+        }
-+        char** symbols = backtrace_symbols(g_mtlStallFrames, count);
-+        cemuLog_log(LogType::Force, "MTLWATCH backtrace of the stalled thread ({} frames):", count);
-+        for (int i = 0; i < count; i++)
-+            cemuLog_log(LogType::Force, "MTLWATCH   {}", symbols ? symbols[i] : "<no symbol>");
-+        if (symbols)
-+            free(symbols);
++        srwlock_activeThreadList.UnlockRead();
 +    }
 +
 +    void MtlStartWatchdog()
@@ -138,14 +150,8 @@ index 89de62bd..1259f748 100644
 +        bool expected = false;
 +        if (!g_mtlWatchdogStarted.compare_exchange_strong(expected, true))
 +            return;
-+        struct sigaction sa{};
-+        sa.sa_handler = MtlStallSignalHandler;
-+        sa.sa_flags = SA_RESTART;
-+        sigemptyset(&sa.sa_mask);
-+        sigaction(SIGUSR1, &sa, nullptr);
-+
 +        std::thread([]() {
-+            uint64 lastSwaps = 0, lastTicks = 0, lastPackets = 0;
++            uint64 lastSwaps = 0, lastTicks = 0, lastPackets = 0, lastIdleSpins = 0;
 +            uint32 stalledSeconds = 0;
 +            uint32 dumpsTaken = 0;
 +            while (true)
@@ -154,32 +160,36 @@ index 89de62bd..1259f748 100644
 +                const uint64 swaps = g_mtlTotalSwaps.load(std::memory_order_relaxed);
 +                const uint64 ticks = g_mtlStageTicks.load(std::memory_order_relaxed);
 +                const uint64 packets = g_diagCPPackets.load(std::memory_order_relaxed);
++                const uint64 idleSpins = g_diagCPIdleSpins.load(std::memory_order_relaxed);
 +                if (swaps != lastSwaps)
 +                {
-+                    lastSwaps = swaps; lastTicks = ticks; lastPackets = packets;
++                    lastSwaps = swaps; lastTicks = ticks; lastPackets = packets; lastIdleSpins = idleSpins;
 +                    stalledSeconds = 0;
 +                    dumpsTaken = 0;
 +                    continue;
 +                }
 +                stalledSeconds += 2;
 +                cemuLog_log(LogType::Force,
-+                    "MTLWATCH stalled {}s | stage={} stageTicks={} (+{}) cpPackets={} (+{}) swaps={} drawCalls={} | drawDone enter={} exit={} | flipWait enter={} exit={} | scanCopy={} scanNoView={}",
++                    "MTLWATCH stalled {}s | stage={} stageTicks={} (+{}) cpPackets={} (+{}) cpIdleSpins=+{} swaps={} drawCalls={} | drawDone enter={} exit={} | flipWait enter={} exit={} | scanCopy={} scanNoView={}",
 +                    stalledSeconds,
 +                    g_mtlStage.load(std::memory_order_relaxed), ticks, ticks - lastTicks,
-+                    packets, packets - lastPackets, swaps,
++                    packets, packets - lastPackets,
++                    g_diagCPIdleSpins.load(std::memory_order_relaxed) - lastIdleSpins, swaps,
 +                    (uint32)LatteGPUState.drawCallCounter,
 +                    GX2::g_diagDrawDoneEnter.load(std::memory_order_relaxed), GX2::g_diagDrawDoneExit.load(std::memory_order_relaxed),
 +                    GX2::g_diagFlipWaitEnter.load(std::memory_order_relaxed), GX2::g_diagFlipWaitExit.load(std::memory_order_relaxed),
 +                    g_diagScanCopyCalls, g_diagScanCopyNoView);
-+                // Two snapshots: one as soon as it is clearly stuck, one later to show
-+                // whether it is parked in one place or looping.
++                // Two snapshots of the emulated console's own threads: one as soon as it
++                // is clearly stuck, one later, so a thread that is moving can be told from
++                // one that is parked.
 +                if ((stalledSeconds == 4 && dumpsTaken == 0) || (stalledSeconds == 20 && dumpsTaken == 1))
 +                {
 +                    dumpsTaken++;
-+                    MtlDumpStalledThread();
++                    MtlDumpGuestThreads(dumpsTaken);
 +                }
 +                lastTicks = ticks;
 +                lastPackets = packets;
++                lastIdleSpins = idleSpins;
 +            }
 +        }).detach();
 +    }
@@ -189,7 +199,7 @@ index 89de62bd..1259f748 100644
  #define IMGUI_IMPL_METAL_CPP
  #include "imgui/imgui_extension.h"
  #include "imgui/imgui_impl_metal.h"
-@@ -178,6 +313,10 @@ MetalRenderer::MetalRenderer()
+@@ -178,6 +314,10 @@ MetalRenderer::MetalRenderer()
      cemuLog_log(LogType::Force, "Metal argument buffers: Tier {}, {} samplers", m_argumentBufferTier == MTL::ArgumentBuffersTier2 ? 2 : 1, m_maxArgumentBufferSamplerCount);
      m_recommendedMaxVRAMUsage = m_device->recommendedMaxWorkingSetSize();
      m_pixelFormatSupport = MetalPixelFormatSupport(m_device);
@@ -200,7 +210,7 @@ index 89de62bd..1259f748 100644
  
      CheckForPixelFormatSupport(m_pixelFormatSupport);
  
-@@ -419,6 +558,8 @@ void MetalRenderer::DrawEmptyFrame(bool mainWindow)
+@@ -419,6 +559,8 @@ void MetalRenderer::DrawEmptyFrame(bool mainWindow)
  
  void MetalRenderer::SwapBuffers(bool swapTV, bool swapDRC)
  {
@@ -209,7 +219,7 @@ index 89de62bd..1259f748 100644
      if (swapTV)
          SwapBuffer(true);
      if (swapDRC)
-@@ -430,6 +571,24 @@ void MetalRenderer::SwapBuffers(bool swapTV, bool swapDRC)
+@@ -430,6 +572,24 @@ void MetalRenderer::SwapBuffers(bool swapTV, bool swapDRC)
      // Debug
      m_performanceMonitor.ResetPerFrameData();
  
@@ -234,7 +244,7 @@ index 89de62bd..1259f748 100644
      // GPU capture
      if (m_capturing)
      {
-@@ -517,8 +676,13 @@ void MetalRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutput
+@@ -517,8 +677,13 @@ void MetalRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutput
                                  sint32 imageX, sint32 imageY, sint32 imageWidth, sint32 imageHeight,
                                  bool padView, bool clearBackground)
  {
@@ -248,7 +258,7 @@ index 89de62bd..1259f748 100644
  
      MTL::Texture* presentTexture = static_cast<LatteTextureViewMtl*>(texView)->GetRGBAView();
  
-@@ -590,6 +754,7 @@ void MetalRenderer::Flush(bool waitIdle)
+@@ -590,6 +755,7 @@ void MetalRenderer::Flush(bool waitIdle)
  
      if (waitIdle && m_executingCommandBuffers.size() != 0)
      {
@@ -256,7 +266,7 @@ index 89de62bd..1259f748 100644
          m_executingCommandBuffers.back()->waitUntilCompleted();
          ProcessFinishedCommandBuffers();
      }
-@@ -1394,7 +1559,9 @@ void MetalRenderer::streamout_rendererFinishDrawcall()
+@@ -1394,7 +1560,9 @@ void MetalRenderer::streamout_rendererFinishDrawcall()
  
  void MetalRenderer::draw_beginSequence()
  {
@@ -266,7 +276,7 @@ index 89de62bd..1259f748 100644
  
      bool streamoutEnable = LatteGPUState.contextRegister[mmVGT_STRMOUT_EN] != 0;
  
-@@ -1403,6 +1570,7 @@ void MetalRenderer::draw_beginSequence()
+@@ -1403,6 +1571,7 @@ void MetalRenderer::draw_beginSequence()
      if (LatteGPUState.activeShaderHasError)
      {
          cemuLog_logOnce(LogType::Force, "Skipping drawcalls due to shader error\n");
@@ -274,7 +284,7 @@ index 89de62bd..1259f748 100644
          m_state.m_skipDrawSequence = true;
          cemu_assert_debug(false);
          return;
-@@ -1416,6 +1584,7 @@ void MetalRenderer::draw_beginSequence()
+@@ -1416,6 +1585,7 @@ void MetalRenderer::draw_beginSequence()
          if (!LatteMRT::UpdateCurrentFBO())
          {
              cemuLog_logOnce(LogType::Force, "Rendertarget invalid\n");
@@ -282,7 +292,7 @@ index 89de62bd..1259f748 100644
              m_state.m_skipDrawSequence = true;
              return; // no render target
          }
-@@ -1423,6 +1592,7 @@ void MetalRenderer::draw_beginSequence()
+@@ -1423,6 +1593,7 @@ void MetalRenderer::draw_beginSequence()
          if (!hasValidFramebufferAttached && !streamoutEnable)
          {
              cemuLog_logOnce(LogType::Force, "Drawcall with no color buffer or depth buffer attached\n");
@@ -290,7 +300,7 @@ index 89de62bd..1259f748 100644
              m_state.m_skipDrawSequence = true;
              return; // no render target
          }
-@@ -1439,13 +1609,19 @@ void MetalRenderer::draw_beginSequence()
+@@ -1439,13 +1610,19 @@ void MetalRenderer::draw_beginSequence()
      LatteRenderTarget_updateScissorBox();
  
      if (!LatteGPUState.contextNew.IsRasterizationEnabled() && !streamoutEnable)
@@ -310,7 +320,7 @@ index 89de62bd..1259f748 100644
          LatteGPUState.drawCallCounter++;
          return;
      }
-@@ -1454,12 +1630,14 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
+@@ -1454,12 +1631,14 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
      if (LatteGPUState.contextNew.GetSpecialStateValues()[8] != 0)
      {
          LatteDraw_handleSpecialState8_clearAsDepth();
@@ -325,7 +335,7 @@ index 89de62bd..1259f748 100644
          LatteGPUState.drawCallCounter++;
          return;
      }
-@@ -1493,7 +1671,10 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
+@@ -1493,7 +1672,10 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
  
      bool usesGeometryShader = UseGeometryShader(LatteGPUState.contextNew, geometryShader != nullptr);
      if (usesGeometryShader && !m_supportsMeshShaders)
@@ -336,7 +346,7 @@ index 89de62bd..1259f748 100644
  
      const bool usesVertexStreamout = !usesGeometryShader && vertexShader->hasStreamoutBufferWrite;
      bool fetchVertexManually = usesGeometryShader || usesVertexStreamout || fetchShader->mtlFetchVertexManually;
-@@ -1559,7 +1740,12 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
+@@ -1559,7 +1741,12 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
      // Render pipeline state
      PipelineObject* pipelineObj = m_pipelineCache->GetRenderPipelineState(fetchShader, vertexShader, geometryShader, pixelShader, m_state.m_lastUsedFBO.m_attachmentsInfo, m_state.m_activeFBO.m_attachmentsInfo, m_state.m_activeFBO.m_fbo->m_size, count, LatteGPUState.contextNew);
      if (!pipelineObj->m_pipeline)
@@ -349,7 +359,7 @@ index 89de62bd..1259f748 100644
  
      if (pipelineObj->m_pipeline != encoderState.m_renderPipelineState)
         {
-@@ -1853,25 +2039,34 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
+@@ -1853,25 +2040,34 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
          m_performanceMonitor.m_triangleFans++;
  
      LatteGPUState.drawCallCounter++;
@@ -384,7 +394,7 @@ index 89de62bd..1259f748 100644
  }
  
  void MetalRenderer::draw_updateVertexBuffersDirectAccess(uint32 minIndex, uint32 maxIndex, uint32 baseInstance, uint32 instanceCount, bool fetchVertexManually)
-@@ -2047,7 +2242,10 @@ void MetalRenderer::PrepareOcclusionQueryDraw()
+@@ -2047,7 +2243,10 @@ void MetalRenderer::PrepareOcclusionQueryDraw()
      {
  
          if (!CommandBufferCompleted(completion))
@@ -395,7 +405,7 @@ index 89de62bd..1259f748 100644
  
          for (auto* query : m_occlusionQuery.m_queries)
              query->AccumulateBuffer(nextBuffer);
-@@ -2063,7 +2261,10 @@ void MetalRenderer::PrepareOcclusionQueryDraw()
+@@ -2063,7 +2262,10 @@ void MetalRenderer::PrepareOcclusionQueryDraw()
  void MetalRenderer::occlusionQuery_flush() {
      CommitCommandBuffer();
      if (m_occlusionQuery.m_lastCommandBuffer)
@@ -406,7 +416,7 @@ index 89de62bd..1259f748 100644
  }
  
  void MetalRenderer::occlusionQuery_updateState() {
-@@ -2975,9 +3176,12 @@ void MetalRenderer::SwapBuffer(bool mainWindow)
+@@ -2975,9 +3177,12 @@ void MetalRenderer::SwapBuffer(bool mainWindow)
      auto& layer = GetLayer(mainWindow);
      const bool drawableAlreadyAcquired = layer.GetDrawable() != nullptr;
  
