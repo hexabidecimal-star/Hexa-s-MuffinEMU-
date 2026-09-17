@@ -19,6 +19,22 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "1.4",
+          "date": "2026-09-17T22:52:06Z",
+          "localizedDescription": "## What changed\n\n- Update build-ios-app.yml\n- New file to diagnose metal rendering issues\n\nMuffinEMU, Wii U emulation for iPhone and iPad, built from commit 281bdd07c527455046b9f333f67494ba008eb5ee.\n\n**`MuffinEMU.ipa`** - SideStore / AltStore / LiveContainer. Unsigned; they re-sign\nwith your own Apple ID at install.\n\n**`MuffinEMU-fakesigned.ipa`** - TrollStore or jailbroken only, with the JIT\nentitlements embedded.\n\nThe recompiler needs a JIT enabler (StikJIT, SideStore, LiveContainer) and the\n\"Use the recompiler (JIT)\" switch in Settings; without both it runs the\ninterpreter. `MuffinEMU.app.dSYM.zip` is only needed to symbolicate a crash report.\n\nMuffinEMU is built on Cemu. Some MeloCafe cores and bug fixes have been brought over to MuffinEMU.\n\n**Full changelog**: https://github.com/hexabidecimal-star/Hexa-s-MuffinEMU-/compare/v1.3...v1.4",
+          "downloadURL": "https://github.com/hexabidecimal-star/Hexa-s-MuffinEMU-/releases/download/v1.4/MuffinEMU-fakesigned.ipa",
+          "size": 68077622,
+          "minOSVersion": "15.0"
+        },
+        {
+          "version": "1.3",
+          "date": "2026-09-17T20:16:20Z",
+          "localizedDescription": "## What changed\n\n- Add files via upload\n\nMuffinEMU, Wii U emulation for iPhone and iPad, built from commit 46c313737b738458d10e9a99c69ebfd9feed5fbf.\n\n**`MuffinEMU.ipa`** - SideStore / AltStore / LiveContainer. Unsigned; they re-sign\nwith your own Apple ID at install.\n\n**`MuffinEMU-fakesigned.ipa`** - TrollStore or jailbroken only, with the JIT\nentitlements embedded.\n\nThe recompiler needs a JIT enabler (StikJIT, SideStore, LiveContainer) and the\n\"Use the recompiler (JIT)\" switch in Settings; without both it runs the\ninterpreter. `MuffinEMU.app.dSYM.zip` is only needed to symbolicate a crash report.\n\nMuffinEMU is built on Cemu. Some MeloCafe cores and bug fixes have been brought over to MuffinEMU.\n\n**Full changelog**: https://github.com/hexabidecimal-star/Hexa-s-MuffinEMU-/compare/v1.2...v1.3",
+          "downloadURL": "https://github.com/hexabidecimal-star/Hexa-s-MuffinEMU-/releases/download/v1.3/MuffinEMU-fakesigned.ipa",
+          "size": 68074466,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "1.2",
           "date": "2026-09-17T07:50:06Z",
           "localizedDescription": "## What changed\n\n- PLEASE WORK\n\nMuffinEMU, Wii U emulation for iPhone and iPad, built from commit 321914677948c5964b3b3b383a6abf7114ef1b12.\n\n**`MuffinEMU.ipa`** - SideStore / AltStore / LiveContainer. Unsigned; they re-sign\nwith your own Apple ID at install.\n\n**`MuffinEMU-fakesigned.ipa`** - TrollStore or jailbroken only, with the JIT\nentitlements embedded.\n\nThe recompiler needs a JIT enabler (StikJIT, SideStore, LiveContainer) and the\n\"Use the recompiler (JIT)\" switch in Settings; without both it runs the\ninterpreter. `MuffinEMU.app.dSYM.zip` is only needed to symbolicate a crash report.\n\nMuffinEMU is built on Cemu. Some MeloCafe cores and bug fixes have been brought over to MuffinEMU.\n\n**Full changelog**: https://github.com/hexabidecimal-star/Hexa-s-MuffinEMU-/compare/v1.1...v1.2",
