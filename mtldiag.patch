@@ -53,7 +53,7 @@ index e262919e..57fd8b27 100644
  	}
  
 diff --git a/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp b/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp
-index 89de62bd..f86a8ff4 100644
+index 89de62bd..7581c598 100644
 --- a/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp
 +++ b/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp
 @@ -26,6 +26,142 @@
@@ -106,15 +106,15 @@ index 89de62bd..f86a8ff4 100644
 +        g_mtlStageTicks.fetch_add(1, std::memory_order_relaxed);
 +    }
 +
-+    const char* MtlGuestThreadState(coreinit::OSThread_t::THREAD_STATE state)
++    const char* MtlGuestThreadState(OSThread_t::THREAD_STATE state)
 +    {
 +        switch (state)
 +        {
-+        case coreinit::OSThread_t::THREAD_STATE::STATE_NONE: return "none";
-+        case coreinit::OSThread_t::THREAD_STATE::STATE_READY: return "ready";
-+        case coreinit::OSThread_t::THREAD_STATE::STATE_RUNNING: return "RUNNING";
-+        case coreinit::OSThread_t::THREAD_STATE::STATE_WAITING: return "waiting";
-+        case coreinit::OSThread_t::THREAD_STATE::STATE_MORIBUND: return "moribund";
++        case OSThread_t::THREAD_STATE::STATE_NONE: return "none";
++        case OSThread_t::THREAD_STATE::STATE_READY: return "ready";
++        case OSThread_t::THREAD_STATE::STATE_RUNNING: return "RUNNING";
++        case OSThread_t::THREAD_STATE::STATE_WAITING: return "waiting";
++        case OSThread_t::THREAD_STATE::STATE_MORIBUND: return "moribund";
 +        default: return "?";
 +        }
 +    }
@@ -130,14 +130,14 @@ index 89de62bd..f86a8ff4 100644
 +            MPTR threadMPTR = activeThread[i];
 +            if (!threadMPTR)
 +                continue;
-+            coreinit::OSThread_t* thread = (coreinit::OSThread_t*)memory_getPointerFromVirtualOffset(threadMPTR);
++            OSThread_t* thread = (OSThread_t*)memory_getPointerFromVirtualOffset(threadMPTR);
 +            if (!thread)
 +                continue;
 +            const char* name = thread->threadName.GetPtr() ? thread->threadName.GetPtr() : "<unnamed>";
 +            cemuLog_log(LogType::Force,
 +                "MTLWATCH   thread {:08x} id={} core={} prio={} state={} suspend={} waitQueue={:08x} waitMutex={:08x} pc={:08x} lr={:08x} name={}",
 +                threadMPTR, (uint32)thread->id, (uint32)thread->context.upir, (sint32)thread->effectivePriority,
-+                MtlGuestThreadState((coreinit::OSThread_t::THREAD_STATE)thread->state),
++                MtlGuestThreadState((OSThread_t::THREAD_STATE)thread->state),
 +                (sint32)thread->suspendCounter,
 +                thread->currentWaitQueue.GetMPTR(), thread->waitingForMutex.GetMPTR(),
 +                (uint32)thread->context.srr0, _swapEndianU32(thread->context.lr), name);
