@@ -1,3 +1,24 @@
+diff --git a/src/Cafe/HW/Latte/Core/LatteCommandProcessor.cpp b/src/Cafe/HW/Latte/Core/LatteCommandProcessor.cpp
+index 14dd7661..227bf346 100644
+--- a/src/Cafe/HW/Latte/Core/LatteCommandProcessor.cpp
++++ b/src/Cafe/HW/Latte/Core/LatteCommandProcessor.cpp
+@@ -1362,6 +1362,8 @@ void LatteCP_processCommandBuffer(DrawPassContext& drawPassCtx)
+ 	}
+ }
+ 
++std::atomic<uint64> g_diagCPPackets{0}; // MTLDIAG
++
+ void LatteCP_ProcessRingbuffer()
+ {
+ 	sint32 timerRecheck = 0; // estimates how much CP processing time has elapsed based on the executed commands, if the value exceeds CP_TIMER_RECHECK then _handleTimers() is called
+@@ -1369,6 +1371,7 @@ void LatteCP_ProcessRingbuffer()
+ 	while (true)
+ 	{
+ 		uint32 itHeader = LatteCP_readU32Deprc();
++		g_diagCPPackets.fetch_add(1, std::memory_order_relaxed); // MTLDIAG
+ 		uint32 itHeaderType = (itHeader >> 30) & 3;
+ 		if (itHeaderType == 3)
+ 		{
 diff --git a/src/Cafe/HW/Latte/Core/LatteRenderTarget.cpp b/src/Cafe/HW/Latte/Core/LatteRenderTarget.cpp
 index e262919e..57fd8b27 100644
 --- a/src/Cafe/HW/Latte/Core/LatteRenderTarget.cpp
@@ -23,18 +44,24 @@ index e262919e..57fd8b27 100644
  	}
  
 diff --git a/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp b/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp
-index 89de62bd..5c8c7221 100644
+index 89de62bd..3c148847 100644
 --- a/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp
 +++ b/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp
-@@ -25,6 +25,24 @@
- #include "WindowSystem.h"
+@@ -26,6 +26,82 @@
  
  #include <cstring>
-+#include <chrono>
-+
-+// ---- MTLDIAG: temporary black-screen diagnostics, remove when done ----
+ 
++// ---- MTLDIAG: temporary diagnostics, remove when done ----
 +extern uint32 g_diagScanCopyCalls;
 +extern uint32 g_diagScanCopyNoView;
++extern std::atomic<uint64> g_diagCPPackets;
++namespace GX2
++{
++    extern std::atomic<uint32> g_diagFlipWaitEnter;
++    extern std::atomic<uint32> g_diagFlipWaitExit;
++    extern std::atomic<uint32> g_diagDrawDoneEnter;
++    extern std::atomic<uint32> g_diagDrawDoneExit;
++}
 +namespace
 +{
 +    struct MtlDiag
@@ -46,22 +73,84 @@ index 89de62bd..5c8c7221 100644
 +        std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
 +    };
 +    MtlDiag g_mtlDiag;
++
++    // Where the render thread last was:
++    //  1 beginSequence   2 drawExecute-enter   3 pipeline-ok      4 drawExecute-done
++    //  5 endSequence     6 swapBuffers         7 backbufferQuad
++    //  8 flush-wait      9 occlusionIdle-wait  10 occlusionFlush-wait
++    std::atomic<uint32> g_mtlStage{0};
++    std::atomic<uint64> g_mtlStageTicks{0};
++    std::atomic<uint64> g_mtlTotalSwaps{0};
++    std::atomic<bool> g_mtlWatchdogStarted{false};
++
++    void MtlStage(uint32 stage)
++    {
++        g_mtlStage.store(stage, std::memory_order_relaxed);
++        g_mtlStageTicks.fetch_add(1, std::memory_order_relaxed);
++    }
++
++    void MtlStartWatchdog()
++    {
++        bool expected = false;
++        if (!g_mtlWatchdogStarted.compare_exchange_strong(expected, true))
++            return;
++        std::thread([]() {
++            uint64 lastSwaps = 0, lastTicks = 0, lastPackets = 0;
++            uint32 stalledSeconds = 0;
++            while (true)
++            {
++                std::this_thread::sleep_for(std::chrono::seconds(2));
++                const uint64 swaps = g_mtlTotalSwaps.load(std::memory_order_relaxed);
++                const uint64 ticks = g_mtlStageTicks.load(std::memory_order_relaxed);
++                const uint64 packets = g_diagCPPackets.load(std::memory_order_relaxed);
++                if (swaps != lastSwaps)
++                {
++                    lastSwaps = swaps; lastTicks = ticks; lastPackets = packets;
++                    stalledSeconds = 0;
++                    continue;
++                }
++                stalledSeconds += 2;
++                cemuLog_log(LogType::Force,
++                    "MTLWATCH stalled {}s | stage={} stageTicks={} (+{}) cpPackets={} (+{}) swaps={} drawCalls={} | drawDone enter={} exit={} | flipWait enter={} exit={} | scanCopy={} scanNoView={}",
++                    stalledSeconds,
++                    g_mtlStage.load(std::memory_order_relaxed), ticks, ticks - lastTicks,
++                    packets, packets - lastPackets, swaps,
++                    (uint32)LatteGPUState.drawCallCounter,
++                    GX2::g_diagDrawDoneEnter.load(std::memory_order_relaxed), GX2::g_diagDrawDoneExit.load(std::memory_order_relaxed),
++                    GX2::g_diagFlipWaitEnter.load(std::memory_order_relaxed), GX2::g_diagFlipWaitExit.load(std::memory_order_relaxed),
++                    g_diagScanCopyCalls, g_diagScanCopyNoView);
++                lastTicks = ticks;
++                lastPackets = packets;
++            }
++        }).detach();
++    }
 +}
 +// ---- end MTLDIAG ----
- 
++
  #define IMGUI_IMPL_METAL_CPP
  #include "imgui/imgui_extension.h"
-@@ -178,6 +196,9 @@ MetalRenderer::MetalRenderer()
+ #include "imgui/imgui_impl_metal.h"
+@@ -178,6 +254,10 @@ MetalRenderer::MetalRenderer()
      cemuLog_log(LogType::Force, "Metal argument buffers: Tier {}, {} samplers", m_argumentBufferTier == MTL::ArgumentBuffersTier2 ? 2 : 1, m_maxArgumentBufferSamplerCount);
      m_recommendedMaxVRAMUsage = m_device->recommendedMaxWorkingSetSize();
      m_pixelFormatSupport = MetalPixelFormatSupport(m_device);
 +    cemuLog_log(LogType::Force, "MTLDIAG caps: device={} metal3={} meshShaders={} framebufferFetch={} BC={} ASTC={}",
 +        deviceName, m_supportsMetal3, m_supportsMeshShaders, m_supportsFramebufferFetch,
 +        m_pixelFormatSupport.m_supportsBCFormats, m_pixelFormatSupport.m_supportsASTCFormats);
++    MtlStartWatchdog();
  
      CheckForPixelFormatSupport(m_pixelFormatSupport);
  
-@@ -430,6 +451,24 @@ void MetalRenderer::SwapBuffers(bool swapTV, bool swapDRC)
+@@ -419,6 +499,8 @@ void MetalRenderer::DrawEmptyFrame(bool mainWindow)
+ 
+ void MetalRenderer::SwapBuffers(bool swapTV, bool swapDRC)
+ {
++    MtlStage(6);
++    g_mtlTotalSwaps.fetch_add(1, std::memory_order_relaxed);
+     if (swapTV)
+         SwapBuffer(true);
+     if (swapDRC)
+@@ -430,6 +512,24 @@ void MetalRenderer::SwapBuffers(bool swapTV, bool swapDRC)
      // Debug
      m_performanceMonitor.ResetPerFrameData();
  
@@ -86,10 +175,11 @@ index 89de62bd..5c8c7221 100644
      // GPU capture
      if (m_capturing)
      {
-@@ -517,8 +556,12 @@ void MetalRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutput
+@@ -517,8 +617,13 @@ void MetalRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutput
                                  sint32 imageX, sint32 imageY, sint32 imageWidth, sint32 imageHeight,
                                  bool padView, bool clearBackground)
  {
++    MtlStage(7);
 +    if (padView) g_mtlDiag.quadDRC++; else g_mtlDiag.quadTV++;
      if (!AcquireDrawable(!padView))
 +    {
@@ -99,15 +189,25 @@ index 89de62bd..5c8c7221 100644
  
      MTL::Texture* presentTexture = static_cast<LatteTextureViewMtl*>(texView)->GetRGBAView();
  
-@@ -1395,6 +1438,7 @@ void MetalRenderer::streamout_rendererFinishDrawcall()
+@@ -590,6 +695,7 @@ void MetalRenderer::Flush(bool waitIdle)
+ 
+     if (waitIdle && m_executingCommandBuffers.size() != 0)
+     {
++        MtlStage(8);
+         m_executingCommandBuffers.back()->waitUntilCompleted();
+         ProcessFinishedCommandBuffers();
+     }
+@@ -1394,7 +1500,9 @@ void MetalRenderer::streamout_rendererFinishDrawcall()
+ 
  void MetalRenderer::draw_beginSequence()
  {
++    MtlStage(1);
      m_state.m_skipDrawSequence = false;
 +    g_mtlDiag.seq++;
  
      bool streamoutEnable = LatteGPUState.contextRegister[mmVGT_STRMOUT_EN] != 0;
  
-@@ -1403,6 +1447,7 @@ void MetalRenderer::draw_beginSequence()
+@@ -1403,6 +1511,7 @@ void MetalRenderer::draw_beginSequence()
      if (LatteGPUState.activeShaderHasError)
      {
          cemuLog_logOnce(LogType::Force, "Skipping drawcalls due to shader error\n");
@@ -115,7 +215,7 @@ index 89de62bd..5c8c7221 100644
          m_state.m_skipDrawSequence = true;
          cemu_assert_debug(false);
          return;
-@@ -1416,6 +1461,7 @@ void MetalRenderer::draw_beginSequence()
+@@ -1416,6 +1525,7 @@ void MetalRenderer::draw_beginSequence()
          if (!LatteMRT::UpdateCurrentFBO())
          {
              cemuLog_logOnce(LogType::Force, "Rendertarget invalid\n");
@@ -123,7 +223,7 @@ index 89de62bd..5c8c7221 100644
              m_state.m_skipDrawSequence = true;
              return; // no render target
          }
-@@ -1423,6 +1469,7 @@ void MetalRenderer::draw_beginSequence()
+@@ -1423,6 +1533,7 @@ void MetalRenderer::draw_beginSequence()
          if (!hasValidFramebufferAttached && !streamoutEnable)
          {
              cemuLog_logOnce(LogType::Force, "Drawcall with no color buffer or depth buffer attached\n");
@@ -131,7 +231,7 @@ index 89de62bd..5c8c7221 100644
              m_state.m_skipDrawSequence = true;
              return; // no render target
          }
-@@ -1439,13 +1486,18 @@ void MetalRenderer::draw_beginSequence()
+@@ -1439,13 +1550,19 @@ void MetalRenderer::draw_beginSequence()
      LatteRenderTarget_updateScissorBox();
  
      if (!LatteGPUState.contextNew.IsRasterizationEnabled() && !streamoutEnable)
@@ -143,6 +243,7 @@ index 89de62bd..5c8c7221 100644
  
  void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 instanceCount, uint32 count, MPTR indexDataMPTR, Latte::LATTE_VGT_DMA_INDEX_TYPE::E_INDEX_TYPE indexType, bool isFirst)
  {
++    MtlStage(2);
 +    g_mtlDiag.draws++;
      if (m_state.m_skipDrawSequence)
      {
@@ -150,7 +251,7 @@ index 89de62bd..5c8c7221 100644
          LatteGPUState.drawCallCounter++;
          return;
      }
-@@ -1454,12 +1506,14 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
+@@ -1454,12 +1571,14 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
      if (LatteGPUState.contextNew.GetSpecialStateValues()[8] != 0)
      {
          LatteDraw_handleSpecialState8_clearAsDepth();
@@ -165,7 +266,7 @@ index 89de62bd..5c8c7221 100644
          LatteGPUState.drawCallCounter++;
          return;
      }
-@@ -1493,7 +1547,10 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
+@@ -1493,7 +1612,10 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
  
      bool usesGeometryShader = UseGeometryShader(LatteGPUState.contextNew, geometryShader != nullptr);
      if (usesGeometryShader && !m_supportsMeshShaders)
@@ -176,7 +277,7 @@ index 89de62bd..5c8c7221 100644
  
      const bool usesVertexStreamout = !usesGeometryShader && vertexShader->hasStreamoutBufferWrite;
      bool fetchVertexManually = usesGeometryShader || usesVertexStreamout || fetchShader->mtlFetchVertexManually;
-@@ -1559,7 +1616,11 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
+@@ -1559,7 +1681,12 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
      // Render pipeline state
      PipelineObject* pipelineObj = m_pipelineCache->GetRenderPipelineState(fetchShader, vertexShader, geometryShader, pixelShader, m_state.m_lastUsedFBO.m_attachmentsInfo, m_state.m_activeFBO.m_attachmentsInfo, m_state.m_activeFBO.m_fbo->m_size, count, LatteGPUState.contextNew);
      if (!pipelineObj->m_pipeline)
@@ -185,10 +286,46 @@ index 89de62bd..5c8c7221 100644
          return;
 +    }
 +    g_mtlDiag.pipeOK++;
++    MtlStage(3);
  
      if (pipelineObj->m_pipeline != encoderState.m_renderPipelineState)
         {
-@@ -2975,9 +3036,12 @@ void MetalRenderer::SwapBuffer(bool mainWindow)
+@@ -1853,10 +1980,12 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
+         m_performanceMonitor.m_triangleFans++;
+ 
+     LatteGPUState.drawCallCounter++;
++    MtlStage(4);
+ }
+ 
+ void MetalRenderer::draw_endSequence()
+ {
++    MtlStage(5);
+     LatteDecompilerShader* pixelShader = LatteSHRC_GetActivePixelShader();
+     // post-drawcall logic
+     if (pixelShader)
+@@ -2047,7 +2176,10 @@ void MetalRenderer::PrepareOcclusionQueryDraw()
+     {
+ 
+         if (!CommandBufferCompleted(completion))
++        {
++            MtlStage(9);
+             completion->waitUntilCompleted();
++        }
+ 
+         for (auto* query : m_occlusionQuery.m_queries)
+             query->AccumulateBuffer(nextBuffer);
+@@ -2063,7 +2195,10 @@ void MetalRenderer::PrepareOcclusionQueryDraw()
+ void MetalRenderer::occlusionQuery_flush() {
+     CommitCommandBuffer();
+     if (m_occlusionQuery.m_lastCommandBuffer)
++    {
++        MtlStage(10);
+         m_occlusionQuery.m_lastCommandBuffer->waitUntilCompleted();
++    }
+ }
+ 
+ void MetalRenderer::occlusionQuery_updateState() {
+@@ -2975,9 +3110,12 @@ void MetalRenderer::SwapBuffer(bool mainWindow)
      auto& layer = GetLayer(mainWindow);
      const bool drawableAlreadyAcquired = layer.GetDrawable() != nullptr;
  
@@ -201,3 +338,32 @@ index 89de62bd..5c8c7221 100644
      if (!drawableAlreadyAcquired)
          ClearColorTextureInternal(layer.GetDrawable()->texture(), 0, 0, 0.0f, 0.0f, 0.0f, 1.0f);
  
+diff --git a/src/Cafe/OS/libs/gx2/GX2_Event.cpp b/src/Cafe/OS/libs/gx2/GX2_Event.cpp
+index 338b7d79..8c686374 100644
+--- a/src/Cafe/OS/libs/gx2/GX2_Event.cpp
++++ b/src/Cafe/OS/libs/gx2/GX2_Event.cpp
+@@ -205,8 +205,15 @@ namespace GX2
+ 		__OSUnlockScheduler();
+ 	}
+ 
++	std::atomic<uint32> g_diagFlipWaitEnter{0};  // MTLDIAG
++	std::atomic<uint32> g_diagFlipWaitExit{0};   // MTLDIAG
++	std::atomic<uint32> g_diagDrawDoneEnter{0};  // MTLDIAG
++	std::atomic<uint32> g_diagDrawDoneExit{0};   // MTLDIAG
++
+ 	void GX2WaitForFlip()
+ 	{
++		g_diagFlipWaitEnter.fetch_add(1, std::memory_order_relaxed); // MTLDIAG
++		struct DiagFlipExit { ~DiagFlipExit() { g_diagFlipWaitExit.fetch_add(1, std::memory_order_relaxed); } } diagFlipExit; // MTLDIAG
+ 		if ((sint32)(_swapEndianU32(LatteGPUState.sharedArea->flipRequestCountBE) == _swapEndianU32(LatteGPUState.sharedArea->flipExecuteCountBE)))
+ 			return; // dont wait if no flip is requested
+ 		__OSLockScheduler();
+@@ -216,6 +223,8 @@ namespace GX2
+ 
+ 	bool GX2DrawDone()
+ 	{
++		g_diagDrawDoneEnter.fetch_add(1, std::memory_order_relaxed); // MTLDIAG
++		struct DiagDrawDoneExit { ~DiagDrawDoneExit() { g_diagDrawDoneExit.fetch_add(1, std::memory_order_relaxed); } } diagDrawDoneExit; // MTLDIAG
+ 		// optional force full sync (texture readback and occlusion queries)
+ 		bool forceFullSync = false;
+ 		if (g_renderer && g_renderer->GetType() == RendererAPI::Vulkan)
