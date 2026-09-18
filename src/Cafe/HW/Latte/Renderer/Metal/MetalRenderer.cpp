@@ -599,6 +599,7 @@ void MetalRenderer::NotifyLatteCommandProcessorIdle()
 {
     //if (m_commitOnIdle)
     //    CommitCommandBuffer();
+    CommitCommandBuffer();
 }
 
 bool MetalRenderer::ImguiBegin(bool mainWindow)
