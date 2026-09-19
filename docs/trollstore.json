@@ -19,6 +19,14 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "2.5",
+          "date": "2026-09-19T10:53:21Z",
+          "localizedDescription": "## What changed\n\n- Update build-ios-app.yml\n- Add files via upload\n\nMuffinEMU, Wii U emulation for iPhone and iPad, built from commit 1cef84d95a71a732852f719d3a766bdeac44cf2c.\n\n**`MuffinEMU.ipa`** - SideStore / AltStore / LiveContainer. Unsigned; they re-sign\nwith your own Apple ID at install.\n\n**`MuffinEMU-fakesigned.ipa`** - TrollStore or jailbroken only, with the JIT\nentitlements embedded.\n\nThe recompiler needs a JIT enabler (StikJIT, SideStore, LiveContainer) and the\n\"Use the recompiler (JIT)\" switch in Settings; without both it runs the\ninterpreter. `MuffinEMU.app.dSYM.zip` is only needed to symbolicate a crash report.\n\nMuffinEMU is built on Cemu. Some MeloCafe cores and bug fixes have been brought over to MuffinEMU.\n\n**Full changelog**: https://github.com/hexabidecimal-star/Hexa-s-MuffinEMU-/compare/v2.4...v2.5",
+          "downloadURL": "https://github.com/hexabidecimal-star/Hexa-s-MuffinEMU-/releases/download/v2.5/MuffinEMU-fakesigned.ipa",
+          "size": 68084292,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "2.4",
           "date": "2026-09-19T10:29:09Z",
           "localizedDescription": "## What changed\n\n- Add files via upload\n\nMuffinEMU, Wii U emulation for iPhone and iPad, built from commit 35994b3df2f78f2c80398c0edf4c1b2e6fc5a42a.\n\n**`MuffinEMU.ipa`** - SideStore / AltStore / LiveContainer. Unsigned; they re-sign\nwith your own Apple ID at install.\n\n**`MuffinEMU-fakesigned.ipa`** - TrollStore or jailbroken only, with the JIT\nentitlements embedded.\n\nThe recompiler needs a JIT enabler (StikJIT, SideStore, LiveContainer) and the\n\"Use the recompiler (JIT)\" switch in Settings; without both it runs the\ninterpreter. `MuffinEMU.app.dSYM.zip` is only needed to symbolicate a crash report.\n\nMuffinEMU is built on Cemu. Some MeloCafe cores and bug fixes have been brought over to MuffinEMU.\n\n**Full changelog**: https://github.com/hexabidecimal-star/Hexa-s-MuffinEMU-/compare/v2.3...v2.4",
