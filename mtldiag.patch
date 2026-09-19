@@ -231,7 +231,7 @@ index 25b812fc..a9f9f816 100644
      if (snapshot.allocation)
          m_snapshotAllocator.FreeReservation(snapshot.allocation);
 diff --git a/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp b/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp
-index 89de62bd..840544d4 100644
+index 89de62bd..39500fda 100644
 --- a/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp
 +++ b/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp
 @@ -22,10 +22,223 @@
@@ -458,7 +458,7 @@ index 89de62bd..840544d4 100644
  #define IMGUI_IMPL_METAL_CPP
  #include "imgui/imgui_extension.h"
  #include "imgui/imgui_impl_metal.h"
-@@ -178,6 +391,19 @@ MetalRenderer::MetalRenderer()
+@@ -178,6 +391,40 @@ MetalRenderer::MetalRenderer()
      cemuLog_log(LogType::Force, "Metal argument buffers: Tier {}, {} samplers", m_argumentBufferTier == MTL::ArgumentBuffersTier2 ? 2 : 1, m_maxArgumentBufferSamplerCount);
      m_recommendedMaxVRAMUsage = m_device->recommendedMaxWorkingSetSize();
      m_pixelFormatSupport = MetalPixelFormatSupport(m_device);
@@ -469,6 +469,27 @@ index 89de62bd..840544d4 100644
 +    g_diagNoArgCacheReuse = MtlDiagSwitch("diag_no_argcache");
 +    g_diagSnapshotRecopy = MtlDiagSwitch("diag_snapshot_recopy");
 +    g_diagValidateArgCache = MtlDiagSwitch("diag_validate_argcache");
++    // MTLDIAG: name every emulated system call stub, so an address in a crash log
++    // ("IP 0x00e00944") can be turned into a function name.
++    if (MtlDiagSwitch("diag_dump_hle"))
++    {
++        uint32 named = 0;
++        for (uint32 addr = MEMORY_CODE_TRAMPOLINE_AREA_ADDR; addr < MEMORY_CODE_TRAMPOLINE_AREA_ADDR + MEMORY_CODE_TRAMPOLINE_AREA_SIZE; addr += 4)
++        {
++            uint8* ptr = memory_getPointerFromVirtualOffsetAllowNull(addr);
++            if (!ptr)
++                continue;
++            const uint32 word = _swapEndianU32(*(uint32*)ptr);
++            if ((word >> 26) != 1)
++                continue;
++            if (const char* name = osLib_getFunctionNameByHLEIndex((sint32)(word & 0xFFFF)))
++            {
++                cemuLog_log(LogType::Force, "MTLDIAG hle {:08x} = {}", addr, name);
++                named++;
++            }
++        }
++        cemuLog_log(LogType::Force, "MTLDIAG hle stub dump complete: {} named entries", named);
++    }
 +    if (MtlDiagSwitch("diag_no_mesh"))
 +    {
 +        m_supportsMeshShaders = false;
@@ -478,7 +499,7 @@ index 89de62bd..840544d4 100644
  
      CheckForPixelFormatSupport(m_pixelFormatSupport);
  
-@@ -419,6 +645,8 @@ void MetalRenderer::DrawEmptyFrame(bool mainWindow)
+@@ -419,6 +666,8 @@ void MetalRenderer::DrawEmptyFrame(bool mainWindow)
  
  void MetalRenderer::SwapBuffers(bool swapTV, bool swapDRC)
  {
@@ -487,7 +508,7 @@ index 89de62bd..840544d4 100644
      if (swapTV)
          SwapBuffer(true);
      if (swapDRC)
-@@ -430,6 +658,31 @@ void MetalRenderer::SwapBuffers(bool swapTV, bool swapDRC)
+@@ -430,6 +679,31 @@ void MetalRenderer::SwapBuffers(bool swapTV, bool swapDRC)
      // Debug
      m_performanceMonitor.ResetPerFrameData();
  
@@ -519,7 +540,7 @@ index 89de62bd..840544d4 100644
      // GPU capture
      if (m_capturing)
      {
-@@ -517,8 +770,13 @@ void MetalRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutput
+@@ -517,8 +791,13 @@ void MetalRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutput
                                  sint32 imageX, sint32 imageY, sint32 imageWidth, sint32 imageHeight,
                                  bool padView, bool clearBackground)
  {
@@ -533,7 +554,7 @@ index 89de62bd..840544d4 100644
  
      MTL::Texture* presentTexture = static_cast<LatteTextureViewMtl*>(texView)->GetRGBAView();
  
-@@ -590,6 +848,7 @@ void MetalRenderer::Flush(bool waitIdle)
+@@ -590,6 +869,7 @@ void MetalRenderer::Flush(bool waitIdle)
  
      if (waitIdle && m_executingCommandBuffers.size() != 0)
      {
@@ -541,7 +562,7 @@ index 89de62bd..840544d4 100644
          m_executingCommandBuffers.back()->waitUntilCompleted();
          ProcessFinishedCommandBuffers();
      }
-@@ -1394,7 +1653,9 @@ void MetalRenderer::streamout_rendererFinishDrawcall()
+@@ -1394,7 +1674,9 @@ void MetalRenderer::streamout_rendererFinishDrawcall()
  
  void MetalRenderer::draw_beginSequence()
  {
@@ -551,7 +572,7 @@ index 89de62bd..840544d4 100644
  
      bool streamoutEnable = LatteGPUState.contextRegister[mmVGT_STRMOUT_EN] != 0;
  
-@@ -1403,6 +1664,7 @@ void MetalRenderer::draw_beginSequence()
+@@ -1403,6 +1685,7 @@ void MetalRenderer::draw_beginSequence()
      if (LatteGPUState.activeShaderHasError)
      {
          cemuLog_logOnce(LogType::Force, "Skipping drawcalls due to shader error\n");
@@ -559,7 +580,7 @@ index 89de62bd..840544d4 100644
          m_state.m_skipDrawSequence = true;
          cemu_assert_debug(false);
          return;
-@@ -1416,6 +1678,7 @@ void MetalRenderer::draw_beginSequence()
+@@ -1416,6 +1699,7 @@ void MetalRenderer::draw_beginSequence()
          if (!LatteMRT::UpdateCurrentFBO())
          {
              cemuLog_logOnce(LogType::Force, "Rendertarget invalid\n");
@@ -567,7 +588,7 @@ index 89de62bd..840544d4 100644
              m_state.m_skipDrawSequence = true;
              return; // no render target
          }
-@@ -1423,6 +1686,7 @@ void MetalRenderer::draw_beginSequence()
+@@ -1423,6 +1707,7 @@ void MetalRenderer::draw_beginSequence()
          if (!hasValidFramebufferAttached && !streamoutEnable)
          {
              cemuLog_logOnce(LogType::Force, "Drawcall with no color buffer or depth buffer attached\n");
@@ -575,7 +596,7 @@ index 89de62bd..840544d4 100644
              m_state.m_skipDrawSequence = true;
              return; // no render target
          }
-@@ -1439,13 +1703,19 @@ void MetalRenderer::draw_beginSequence()
+@@ -1439,13 +1724,19 @@ void MetalRenderer::draw_beginSequence()
      LatteRenderTarget_updateScissorBox();
  
      if (!LatteGPUState.contextNew.IsRasterizationEnabled() && !streamoutEnable)
@@ -595,7 +616,7 @@ index 89de62bd..840544d4 100644
          LatteGPUState.drawCallCounter++;
          return;
      }
-@@ -1454,12 +1724,14 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
+@@ -1454,12 +1745,14 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
      if (LatteGPUState.contextNew.GetSpecialStateValues()[8] != 0)
      {
          LatteDraw_handleSpecialState8_clearAsDepth();
@@ -610,7 +631,7 @@ index 89de62bd..840544d4 100644
          LatteGPUState.drawCallCounter++;
          return;
      }
-@@ -1493,7 +1765,10 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
+@@ -1493,7 +1786,10 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
  
      bool usesGeometryShader = UseGeometryShader(LatteGPUState.contextNew, geometryShader != nullptr);
      if (usesGeometryShader && !m_supportsMeshShaders)
@@ -621,7 +642,7 @@ index 89de62bd..840544d4 100644
  
      const bool usesVertexStreamout = !usesGeometryShader && vertexShader->hasStreamoutBufferWrite;
      bool fetchVertexManually = usesGeometryShader || usesVertexStreamout || fetchShader->mtlFetchVertexManually;
-@@ -1559,7 +1834,12 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
+@@ -1559,7 +1855,12 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
      // Render pipeline state
      PipelineObject* pipelineObj = m_pipelineCache->GetRenderPipelineState(fetchShader, vertexShader, geometryShader, pixelShader, m_state.m_lastUsedFBO.m_attachmentsInfo, m_state.m_activeFBO.m_attachmentsInfo, m_state.m_activeFBO.m_fbo->m_size, count, LatteGPUState.contextNew);
      if (!pipelineObj->m_pipeline)
@@ -634,7 +655,7 @@ index 89de62bd..840544d4 100644
  
      if (pipelineObj->m_pipeline != encoderState.m_renderPipelineState)
         {
-@@ -1853,25 +2133,34 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
+@@ -1853,25 +2154,34 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
          m_performanceMonitor.m_triangleFans++;
  
      LatteGPUState.drawCallCounter++;
@@ -669,7 +690,7 @@ index 89de62bd..840544d4 100644
  }
  
  void MetalRenderer::draw_updateVertexBuffersDirectAccess(uint32 minIndex, uint32 maxIndex, uint32 baseInstance, uint32 instanceCount, bool fetchVertexManually)
-@@ -1914,6 +2203,8 @@ void MetalRenderer::draw_updateVertexBuffersDirectAccess(uint32 minIndex, uint32
+@@ -1914,6 +2224,8 @@ void MetalRenderer::draw_updateVertexBuffersDirectAccess(uint32 minIndex, uint32
              {
                  auto* allocation = m_memoryManager->GetCachedSnapshot(MetalMemoryManager::VertexSnapshotBase + bufferIndex,
                      memory_getPointerFromVirtualOffset(bufferAddress), bufferSize, firstByte);
@@ -678,7 +699,7 @@ index 89de62bd..840544d4 100644
  
                  m_state.m_vertexBuffers[bufferIndex] = allocation->mtlBuffer;
                  m_state.m_vertexBufferOffsets[bufferIndex] = allocation->bufferOffset;
-@@ -1969,6 +2260,8 @@ void MetalRenderer::draw_updateUniformBuffersDirectAccess(LatteDecompilerShader*
+@@ -1969,6 +2281,8 @@ void MetalRenderer::draw_updateUniformBuffersDirectAccess(LatteDecompilerShader*
              {
                  auto* allocation = m_memoryManager->GetCachedSnapshot(MetalMemoryManager::UniformSnapshotBase + shaderType * MAX_MTL_BUFFERS + bufferIndex,
                      memory_getPointerFromVirtualOffset(physicalAddr), uniformSize);
@@ -687,7 +708,7 @@ index 89de62bd..840544d4 100644
  
                  m_state.m_uniformBuffers[shaderType][bufferIndex] = allocation->mtlBuffer;
                  m_state.m_uniformBufferOffsets[shaderType][bufferIndex] = allocation->bufferOffset;
-@@ -2047,7 +2340,10 @@ void MetalRenderer::PrepareOcclusionQueryDraw()
+@@ -2047,7 +2361,10 @@ void MetalRenderer::PrepareOcclusionQueryDraw()
      {
  
          if (!CommandBufferCompleted(completion))
@@ -698,7 +719,7 @@ index 89de62bd..840544d4 100644
  
          for (auto* query : m_occlusionQuery.m_queries)
              query->AccumulateBuffer(nextBuffer);
-@@ -2063,7 +2359,10 @@ void MetalRenderer::PrepareOcclusionQueryDraw()
+@@ -2063,7 +2380,10 @@ void MetalRenderer::PrepareOcclusionQueryDraw()
  void MetalRenderer::occlusionQuery_flush() {
      CommitCommandBuffer();
      if (m_occlusionQuery.m_lastCommandBuffer)
@@ -709,7 +730,7 @@ index 89de62bd..840544d4 100644
  }
  
  void MetalRenderer::occlusionQuery_updateState() {
-@@ -2975,9 +3274,12 @@ void MetalRenderer::SwapBuffer(bool mainWindow)
+@@ -2975,9 +3295,12 @@ void MetalRenderer::SwapBuffer(bool mainWindow)
      auto& layer = GetLayer(mainWindow);
      const bool drawableAlreadyAcquired = layer.GetDrawable() != nullptr;
  
