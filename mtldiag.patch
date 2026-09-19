@@ -20,6 +20,42 @@ index ce2a855c..55c55b48 100644
  #if BOOST_OS_WINDOWS
  	uint32 prevState = _controlfp(0, 0);
  	_controlfp(_RC_NEAR, _MCW_RC);
+diff --git a/src/Cafe/HW/Latte/Core/FetchShader.cpp b/src/Cafe/HW/Latte/Core/FetchShader.cpp
+index 4ea633ba..f5c7461d 100644
+--- a/src/Cafe/HW/Latte/Core/FetchShader.cpp
++++ b/src/Cafe/HW/Latte/Core/FetchShader.cpp
+@@ -445,6 +445,31 @@ LatteFetchShader* LatteShaderRecompiler_createFetchShader(LatteFetchShader::Cach
+ 	}
+ 	LatteShader_calculateFSKey(newFetchShader);
+ 	newFetchShader->CalculateFetchShaderVkHash();
++
++	// MTLDIAG: one line per attribute of every distinct fetch shader, capped so a long
++	// session cannot flood the log. Backend-independent on purpose - the same layout is
++	// what OpenGL, Vulkan and Metal each have to reproduce.
++	{
++		static std::atomic<uint32> s_diagFetchShadersLogged{0};
++		if (s_diagFetchShadersLogged.fetch_add(1, std::memory_order_relaxed) < 200)
++		{
++			for (auto& diagGroup : newFetchShader->bufferGroups)
++			{
++				const uint32 diagBufferBase = mmSQ_VTX_ATTRIBUTE_BLOCK_START + diagGroup.attributeBufferIndex * 7;
++				const uint32 diagStride = (contextRegister[diagBufferBase + 2] >> 11) & 0xFFFF;
++				for (sint32 diagAttr = 0; diagAttr < diagGroup.attribCount; diagAttr++)
++				{
++					const auto& a = diagGroup.attrib[diagAttr];
++					cemuLog_log(LogType::Force,
++						"MTLDIAG fetch fs={:016x} buffer={} stride={} vboStride={} semantic={} format={:02x} nfa={} signed={} endian={} divisor={} offset={} ds={}{}{}{} fetchType={}",
++						newFetchShader->vkPipelineHashFragment, diagGroup.attributeBufferIndex, diagStride, diagGroup.vboStride,
++						(uint32)a.semanticId, (uint32)a.format, (uint32)a.nfa, (uint32)a.isSigned, (uint32)a.endianSwap,
++						a.aluDivisor, a.offset, (uint32)a.ds[0], (uint32)a.ds[1], (uint32)a.ds[2], (uint32)a.ds[3],
++						(uint32)a.fetchType);
++				}
++			}
++		}
++	}
+ #ifdef ENABLE_METAL
+ 	newFetchShader->CheckIfVerticesNeedManualFetchMtl(contextRegister);
+ #endif
 diff --git a/src/Cafe/HW/Latte/Core/LatteCommandProcessor.cpp b/src/Cafe/HW/Latte/Core/LatteCommandProcessor.cpp
 index 14dd7661..64d1140d 100644
 --- a/src/Cafe/HW/Latte/Core/LatteCommandProcessor.cpp
@@ -796,3 +832,41 @@ index 338b7d79..8c686374 100644
  		// optional force full sync (texture readback and occlusion queries)
  		bool forceFullSync = false;
  		if (g_renderer && g_renderer->GetType() == RendererAPI::Vulkan)
+diff --git a/src/Common/ExceptionHandler/ExceptionHandler.cpp b/src/Common/ExceptionHandler/ExceptionHandler.cpp
+index 1c7e95b5..3842ef38 100644
+--- a/src/Common/ExceptionHandler/ExceptionHandler.cpp
++++ b/src/Common/ExceptionHandler/ExceptionHandler.cpp
+@@ -3,6 +3,7 @@
+ #include "Cafe/CafeSystem.h"
+ #include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
+ #include "Cafe/HW/Espresso/PPCState.h"
++#include "Cafe/HW/MMU/MMU.h" // MTLDIAG
+ #include "Cafe/HW/Espresso/Debugger/GDBStub.h"
+ #include "ExceptionHandler.h"
+ 
+@@ -79,6 +80,25 @@ void ExceptionHandler_LogGeneralInfo()
+         sprintf(dumpLine, "IP 0x%08x LR 0x%08x Thread 0x%08x", hCPU->instructionPointer, hCPU->spr.LR, threadPtr);
+         CrashLog_WriteLine(dumpLine);
+ 
++        // MTLDIAG: if the IP sits on an emulated system call stub, name it.
++        {
++            extern const char* osLib_getFunctionNameByHLEIndex(sint32 hleIndex);
++            const uint32 ip = hCPU->instructionPointer;
++            if (ip >= MEMORY_CODE_TRAMPOLINE_AREA_ADDR && ip < MEMORY_CODE_TRAMPOLINE_AREA_ADDR + MEMORY_CODE_TRAMPOLINE_AREA_SIZE)
++            {
++                if (uint8* stubPtr = memory_getPointerFromVirtualOffsetAllowNull(ip))
++                {
++                    const uint32 stubWord = _swapEndianU32(*(uint32*)stubPtr);
++                    if ((stubWord >> 26) == 1)
++                    {
++                        const char* hleName = osLib_getFunctionNameByHLEIndex((sint32)(stubWord & 0xFFFF));
++                        sprintf(dumpLine, "IP is emulated system call: %s (HLE index %u)", hleName ? hleName : "<unnamed>", stubWord & 0xFFFF);
++                        CrashLog_WriteLine(dumpLine);
++                    }
++                }
++            }
++        }
++
+         // GPR info
+         CrashLog_WriteLine("");
+         auto gprs = hCPU->gpr;
