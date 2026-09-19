@@ -110,16 +110,20 @@ index cfd7ab81..ded40077 100644
  	res->bufferIndex = addr.chunkIndex;
  	res->bufferOffset = addr.offset;
 diff --git a/src/Cafe/HW/Latte/Renderer/Metal/MetalMemoryManager.cpp b/src/Cafe/HW/Latte/Renderer/Metal/MetalMemoryManager.cpp
-index 25b812fc..4c59ad8b 100644
+index 25b812fc..a9f9f816 100644
 --- a/src/Cafe/HW/Latte/Renderer/Metal/MetalMemoryManager.cpp
 +++ b/src/Cafe/HW/Latte/Renderer/Metal/MetalMemoryManager.cpp
-@@ -36,6 +36,14 @@ MetalMemoryManager::~MetalMemoryManager()
+@@ -36,6 +36,18 @@ MetalMemoryManager::~MetalMemoryManager()
      }
  }
  
 +// MTLDIAG switches and counters
 +bool g_diagNoSnapshotReuse = false;
 +bool g_diagNoArgCacheReuse = false;
++bool g_diagSnapshotRecopy = false;
++bool g_diagValidateArgCache = false;
++std::atomic<uint64> g_diagArgMismatch{0};
++std::atomic<uint64> g_diagArgChecked{0};
 +std::atomic<uint64> g_diagSnapshotReuse{0};
 +std::atomic<uint64> g_diagSnapshotUpload{0};
 +std::atomic<uint64> g_diagArgReuse{0};
@@ -128,11 +132,21 @@ index 25b812fc..4c59ad8b 100644
  MetalSynchronizedHeapAllocator::AllocatorReservation* MetalMemoryManager::GetCachedSnapshot(uint32 slot, const void* data, uint32 size, uint32 firstByte)
  {
      cemu_assert_debug(slot < SnapshotCount && firstByte <= size);
-@@ -49,16 +57,26 @@ MetalSynchronizedHeapAllocator::AllocatorReservation* MetalMemoryManager::GetCac
+@@ -49,16 +61,36 @@ MetalSynchronizedHeapAllocator::AllocatorReservation* MetalMemoryManager::GetCac
      // an emulator has no reliable notification for "this range did not really change".
      // memcmp over a range already in a mapped device buffer is far cheaper than the
      // re-upload it avoids.
 -    if (snapshot.allocation && snapshot.firstByte <= firstByte && snapshot.endByte >= size &&
++    // MTLDIAG: keep the same allocation, but refresh its contents every time. Tests the
++    // reuse DECISION without the allocation churn that a full bypass causes.
++    if (g_diagSnapshotRecopy && snapshot.allocation && snapshot.firstByte <= firstByte && snapshot.endByte >= size)
++    {
++        std::memcpy(snapshot.allocation->memPtr + firstByte, source + firstByte, copySize);
++        m_snapshotAllocator.FlushReservation(snapshot.allocation);
++        g_diagSnapshotUpload.fetch_add(1, std::memory_order_relaxed);
++        return snapshot.allocation;
++    }
++
 +    if (!g_diagNoSnapshotReuse &&
 +        snapshot.allocation && snapshot.firstByte <= firstByte && snapshot.endByte >= size &&
          std::memcmp(snapshot.allocation->memPtr + firstByte, source + firstByte, copySize) == 0)
@@ -157,7 +171,7 @@ index 25b812fc..4c59ad8b 100644
      snapshot.firstByte = firstByte;
      snapshot.endByte = size;
      std::memcpy(snapshot.allocation->memPtr + firstByte, source + firstByte, copySize);
-@@ -76,11 +94,13 @@ MetalSynchronizedHeapAllocator::AllocatorReservation* MetalMemoryManager::GetCac
+@@ -76,11 +108,57 @@ MetalSynchronizedHeapAllocator::AllocatorReservation* MetalMemoryManager::GetCac
      // encoded buffer would come out byte-identical - skip the encode entirely. Note the
      // CALLER still has to re-declare residency (useResource) for every encoder even on
      // this path; only the encoding is cached, not the residency.
@@ -166,6 +180,50 @@ index 25b812fc..4c59ad8b 100644
      {
          m_mtlr->GetPerformanceMonitor().m_argumentBufferReuses++;
 +        g_diagArgReuse.fetch_add(1, std::memory_order_relaxed);
++
++        // MTLDIAG: re-encode into scratch and compare, to see whether a "hit" really does
++        // describe the same bindings as a fresh encode would.
++        if (g_diagValidateArgCache && snapshot.allocation)
++        {
++            const uint32 encodedLength = static_cast<uint32>(encoder->encodedLength());
++            const uint32 alignment = std::max<uint32>(256, static_cast<uint32>(encoder->alignment()));
++            auto* scratch = m_snapshotAllocator.AllocateBufferMemory(encodedLength, alignment);
++            if (scratch)
++            {
++                std::memset(scratch->memPtr, 0, scratch->size);
++                encoder->setArgumentBuffer(scratch->mtlBuffer, scratch->bufferOffset);
++                for (uint32 index = 0; index < bindings.size(); ++index)
++                {
++                    const auto& binding = bindings[index];
++                    switch (binding.type)
++                    {
++                        case MetalArgumentBinding::Type::Unused: break;
++                        case MetalArgumentBinding::Type::Buffer:
++                            encoder->setBuffer(static_cast<MTL::Buffer*>(binding.resource), binding.value, index); break;
++                        case MetalArgumentBinding::Type::Texture:
++                            encoder->setTexture(static_cast<MTL::Texture*>(binding.resource), index); break;
++                        case MetalArgumentBinding::Type::Sampler:
++                            encoder->setSamplerState(static_cast<MTL::SamplerState*>(binding.resource), index); break;
++                        case MetalArgumentBinding::Type::Constant:
++                            if (void* constant = encoder->constantData(index))
++                                *static_cast<uint32*>(constant) = static_cast<uint32>(binding.value);
++                            break;
++                    }
++                }
++                g_diagArgChecked.fetch_add(1, std::memory_order_relaxed);
++                if (std::memcmp(scratch->memPtr, snapshot.allocation->memPtr, encodedLength) != 0)
++                {
++                    g_diagArgMismatch.fetch_add(1, std::memory_order_relaxed);
++                    uint32 firstDiff = 0;
++                    while (firstDiff < encodedLength && scratch->memPtr[firstDiff] == snapshot.allocation->memPtr[firstDiff])
++                        firstDiff++;
++                    cemuLog_logOnce(LogType::Force,
++                        "MTLDIAG argument buffer cache hit does NOT match a fresh encode: stage {}, {} bytes, first difference at byte {}",
++                        stage, encodedLength, firstDiff);
++                }
++                m_snapshotAllocator.FreeReservation(scratch);
++            }
++        }
          return snapshot.allocation;
      }
 +    g_diagArgEncode.fetch_add(1, std::memory_order_relaxed);
@@ -173,10 +231,10 @@ index 25b812fc..4c59ad8b 100644
      if (snapshot.allocation)
          m_snapshotAllocator.FreeReservation(snapshot.allocation);
 diff --git a/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp b/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp
-index 89de62bd..26671a1a 100644
+index 89de62bd..840544d4 100644
 --- a/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp
 +++ b/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp
-@@ -22,10 +22,219 @@
+@@ -22,10 +22,223 @@
  #include "Cafe/HW/Latte/Core/FetchShader.h"
  #include "Cafe/HW/Latte/Core/LatteConst.h"
  #include "config/CemuConfig.h"
@@ -195,6 +253,10 @@ index 89de62bd..26671a1a 100644
 +extern std::atomic<uint64> g_diagCPIdleSpins;
 +extern bool g_diagNoSnapshotReuse;
 +extern bool g_diagNoArgCacheReuse;
++extern bool g_diagSnapshotRecopy;
++extern bool g_diagValidateArgCache;
++extern std::atomic<uint64> g_diagArgMismatch;
++extern std::atomic<uint64> g_diagArgChecked;
 +extern std::atomic<uint64> g_diagSnapshotReuse;
 +extern std::atomic<uint64> g_diagSnapshotUpload;
 +extern std::atomic<uint64> g_diagArgReuse;
@@ -396,7 +458,7 @@ index 89de62bd..26671a1a 100644
  #define IMGUI_IMPL_METAL_CPP
  #include "imgui/imgui_extension.h"
  #include "imgui/imgui_impl_metal.h"
-@@ -178,6 +387,17 @@ MetalRenderer::MetalRenderer()
+@@ -178,6 +391,19 @@ MetalRenderer::MetalRenderer()
      cemuLog_log(LogType::Force, "Metal argument buffers: Tier {}, {} samplers", m_argumentBufferTier == MTL::ArgumentBuffersTier2 ? 2 : 1, m_maxArgumentBufferSamplerCount);
      m_recommendedMaxVRAMUsage = m_device->recommendedMaxWorkingSetSize();
      m_pixelFormatSupport = MetalPixelFormatSupport(m_device);
@@ -405,6 +467,8 @@ index 89de62bd..26671a1a 100644
 +        m_pixelFormatSupport.m_supportsBCFormats, m_pixelFormatSupport.m_supportsASTCFormats);
 +    g_diagNoSnapshotReuse = MtlDiagSwitch("diag_no_snapshot");
 +    g_diagNoArgCacheReuse = MtlDiagSwitch("diag_no_argcache");
++    g_diagSnapshotRecopy = MtlDiagSwitch("diag_snapshot_recopy");
++    g_diagValidateArgCache = MtlDiagSwitch("diag_validate_argcache");
 +    if (MtlDiagSwitch("diag_no_mesh"))
 +    {
 +        m_supportsMeshShaders = false;
@@ -414,7 +478,7 @@ index 89de62bd..26671a1a 100644
  
      CheckForPixelFormatSupport(m_pixelFormatSupport);
  
-@@ -419,6 +639,8 @@ void MetalRenderer::DrawEmptyFrame(bool mainWindow)
+@@ -419,6 +645,8 @@ void MetalRenderer::DrawEmptyFrame(bool mainWindow)
  
  void MetalRenderer::SwapBuffers(bool swapTV, bool swapDRC)
  {
@@ -423,7 +487,7 @@ index 89de62bd..26671a1a 100644
      if (swapTV)
          SwapBuffer(true);
      if (swapDRC)
-@@ -430,6 +652,27 @@ void MetalRenderer::SwapBuffers(bool swapTV, bool swapDRC)
+@@ -430,6 +658,31 @@ void MetalRenderer::SwapBuffers(bool swapTV, bool swapDRC)
      // Debug
      m_performanceMonitor.ResetPerFrameData();
  
@@ -442,6 +506,10 @@ index 89de62bd..26671a1a 100644
 +            cemuLog_log(LogType::Force, "MTLDIAG   caches: snapshot reuse={} upload={} | argbuffer reuse={} encode={}",
 +                g_diagSnapshotReuse.exchange(0, std::memory_order_relaxed), g_diagSnapshotUpload.exchange(0, std::memory_order_relaxed),
 +                g_diagArgReuse.exchange(0, std::memory_order_relaxed), g_diagArgEncode.exchange(0, std::memory_order_relaxed));
++            const uint64 argChecked = g_diagArgChecked.exchange(0, std::memory_order_relaxed);
++            if (argChecked)
++                cemuLog_log(LogType::Force, "MTLDIAG   argcache validation: checked={} mismatched={}",
++                    argChecked, g_diagArgMismatch.exchange(0, std::memory_order_relaxed));
 +            g_mtlDiag = MtlDiag{};
 +            g_diagScanCopyCalls = 0;
 +            g_diagScanCopyNoView = 0;
@@ -451,7 +519,7 @@ index 89de62bd..26671a1a 100644
      // GPU capture
      if (m_capturing)
      {
-@@ -517,8 +760,13 @@ void MetalRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutput
+@@ -517,8 +770,13 @@ void MetalRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutput
                                  sint32 imageX, sint32 imageY, sint32 imageWidth, sint32 imageHeight,
                                  bool padView, bool clearBackground)
  {
@@ -465,7 +533,7 @@ index 89de62bd..26671a1a 100644
  
      MTL::Texture* presentTexture = static_cast<LatteTextureViewMtl*>(texView)->GetRGBAView();
  
-@@ -590,6 +838,7 @@ void MetalRenderer::Flush(bool waitIdle)
+@@ -590,6 +848,7 @@ void MetalRenderer::Flush(bool waitIdle)
  
      if (waitIdle && m_executingCommandBuffers.size() != 0)
      {
@@ -473,7 +541,7 @@ index 89de62bd..26671a1a 100644
          m_executingCommandBuffers.back()->waitUntilCompleted();
          ProcessFinishedCommandBuffers();
      }
-@@ -1394,7 +1643,9 @@ void MetalRenderer::streamout_rendererFinishDrawcall()
+@@ -1394,7 +1653,9 @@ void MetalRenderer::streamout_rendererFinishDrawcall()
  
  void MetalRenderer::draw_beginSequence()
  {
@@ -483,7 +551,7 @@ index 89de62bd..26671a1a 100644
  
      bool streamoutEnable = LatteGPUState.contextRegister[mmVGT_STRMOUT_EN] != 0;
  
-@@ -1403,6 +1654,7 @@ void MetalRenderer::draw_beginSequence()
+@@ -1403,6 +1664,7 @@ void MetalRenderer::draw_beginSequence()
      if (LatteGPUState.activeShaderHasError)
      {
          cemuLog_logOnce(LogType::Force, "Skipping drawcalls due to shader error\n");
@@ -491,7 +559,7 @@ index 89de62bd..26671a1a 100644
          m_state.m_skipDrawSequence = true;
          cemu_assert_debug(false);
          return;
-@@ -1416,6 +1668,7 @@ void MetalRenderer::draw_beginSequence()
+@@ -1416,6 +1678,7 @@ void MetalRenderer::draw_beginSequence()
          if (!LatteMRT::UpdateCurrentFBO())
          {
              cemuLog_logOnce(LogType::Force, "Rendertarget invalid\n");
@@ -499,7 +567,7 @@ index 89de62bd..26671a1a 100644
              m_state.m_skipDrawSequence = true;
              return; // no render target
          }
-@@ -1423,6 +1676,7 @@ void MetalRenderer::draw_beginSequence()
+@@ -1423,6 +1686,7 @@ void MetalRenderer::draw_beginSequence()
          if (!hasValidFramebufferAttached && !streamoutEnable)
          {
              cemuLog_logOnce(LogType::Force, "Drawcall with no color buffer or depth buffer attached\n");
@@ -507,7 +575,7 @@ index 89de62bd..26671a1a 100644
              m_state.m_skipDrawSequence = true;
              return; // no render target
          }
-@@ -1439,13 +1693,19 @@ void MetalRenderer::draw_beginSequence()
+@@ -1439,13 +1703,19 @@ void MetalRenderer::draw_beginSequence()
      LatteRenderTarget_updateScissorBox();
  
      if (!LatteGPUState.contextNew.IsRasterizationEnabled() && !streamoutEnable)
@@ -527,7 +595,7 @@ index 89de62bd..26671a1a 100644
          LatteGPUState.drawCallCounter++;
          return;
      }
-@@ -1454,12 +1714,14 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
+@@ -1454,12 +1724,14 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
      if (LatteGPUState.contextNew.GetSpecialStateValues()[8] != 0)
      {
          LatteDraw_handleSpecialState8_clearAsDepth();
@@ -542,7 +610,7 @@ index 89de62bd..26671a1a 100644
          LatteGPUState.drawCallCounter++;
          return;
      }
-@@ -1493,7 +1755,10 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
+@@ -1493,7 +1765,10 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
  
      bool usesGeometryShader = UseGeometryShader(LatteGPUState.contextNew, geometryShader != nullptr);
      if (usesGeometryShader && !m_supportsMeshShaders)
@@ -553,7 +621,7 @@ index 89de62bd..26671a1a 100644
  
      const bool usesVertexStreamout = !usesGeometryShader && vertexShader->hasStreamoutBufferWrite;
      bool fetchVertexManually = usesGeometryShader || usesVertexStreamout || fetchShader->mtlFetchVertexManually;
-@@ -1559,7 +1824,12 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
+@@ -1559,7 +1834,12 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
      // Render pipeline state
      PipelineObject* pipelineObj = m_pipelineCache->GetRenderPipelineState(fetchShader, vertexShader, geometryShader, pixelShader, m_state.m_lastUsedFBO.m_attachmentsInfo, m_state.m_activeFBO.m_attachmentsInfo, m_state.m_activeFBO.m_fbo->m_size, count, LatteGPUState.contextNew);
      if (!pipelineObj->m_pipeline)
@@ -566,7 +634,7 @@ index 89de62bd..26671a1a 100644
  
      if (pipelineObj->m_pipeline != encoderState.m_renderPipelineState)
         {
-@@ -1853,25 +2123,34 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
+@@ -1853,25 +2133,34 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
          m_performanceMonitor.m_triangleFans++;
  
      LatteGPUState.drawCallCounter++;
@@ -601,7 +669,7 @@ index 89de62bd..26671a1a 100644
  }
  
  void MetalRenderer::draw_updateVertexBuffersDirectAccess(uint32 minIndex, uint32 maxIndex, uint32 baseInstance, uint32 instanceCount, bool fetchVertexManually)
-@@ -1914,6 +2193,8 @@ void MetalRenderer::draw_updateVertexBuffersDirectAccess(uint32 minIndex, uint32
+@@ -1914,6 +2203,8 @@ void MetalRenderer::draw_updateVertexBuffersDirectAccess(uint32 minIndex, uint32
              {
                  auto* allocation = m_memoryManager->GetCachedSnapshot(MetalMemoryManager::VertexSnapshotBase + bufferIndex,
                      memory_getPointerFromVirtualOffset(bufferAddress), bufferSize, firstByte);
@@ -610,7 +678,7 @@ index 89de62bd..26671a1a 100644
  
                  m_state.m_vertexBuffers[bufferIndex] = allocation->mtlBuffer;
                  m_state.m_vertexBufferOffsets[bufferIndex] = allocation->bufferOffset;
-@@ -1969,6 +2250,8 @@ void MetalRenderer::draw_updateUniformBuffersDirectAccess(LatteDecompilerShader*
+@@ -1969,6 +2260,8 @@ void MetalRenderer::draw_updateUniformBuffersDirectAccess(LatteDecompilerShader*
              {
                  auto* allocation = m_memoryManager->GetCachedSnapshot(MetalMemoryManager::UniformSnapshotBase + shaderType * MAX_MTL_BUFFERS + bufferIndex,
                      memory_getPointerFromVirtualOffset(physicalAddr), uniformSize);
@@ -619,7 +687,7 @@ index 89de62bd..26671a1a 100644
  
                  m_state.m_uniformBuffers[shaderType][bufferIndex] = allocation->mtlBuffer;
                  m_state.m_uniformBufferOffsets[shaderType][bufferIndex] = allocation->bufferOffset;
-@@ -2047,7 +2330,10 @@ void MetalRenderer::PrepareOcclusionQueryDraw()
+@@ -2047,7 +2340,10 @@ void MetalRenderer::PrepareOcclusionQueryDraw()
      {
  
          if (!CommandBufferCompleted(completion))
@@ -630,7 +698,7 @@ index 89de62bd..26671a1a 100644
  
          for (auto* query : m_occlusionQuery.m_queries)
              query->AccumulateBuffer(nextBuffer);
-@@ -2063,7 +2349,10 @@ void MetalRenderer::PrepareOcclusionQueryDraw()
+@@ -2063,7 +2359,10 @@ void MetalRenderer::PrepareOcclusionQueryDraw()
  void MetalRenderer::occlusionQuery_flush() {
      CommitCommandBuffer();
      if (m_occlusionQuery.m_lastCommandBuffer)
@@ -641,7 +709,7 @@ index 89de62bd..26671a1a 100644
  }
  
  void MetalRenderer::occlusionQuery_updateState() {
-@@ -2975,9 +3264,12 @@ void MetalRenderer::SwapBuffer(bool mainWindow)
+@@ -2975,9 +3274,12 @@ void MetalRenderer::SwapBuffer(bool mainWindow)
      auto& layer = GetLayer(mainWindow);
      const bool drawableAlreadyAcquired = layer.GetDrawable() != nullptr;
  
