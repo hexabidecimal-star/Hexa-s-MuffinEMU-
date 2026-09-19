@@ -59,6 +59,9 @@ jobs:
       - name: Apply MTLDIAG patch
         run: git apply mtldiag.patch
 
+      - name: Apply atomic64 alignment fix
+        run: git apply atomic64-alignment.patch
+
       - name: Select full Xcode and install build tools
         run: |
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
