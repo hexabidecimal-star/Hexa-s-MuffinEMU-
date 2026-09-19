@@ -19,6 +19,14 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "2.1",
+          "date": "2026-09-19T08:12:50Z",
+          "localizedDescription": "## What changed\n\n- Add files via upload\n\nMuffinEMU, Wii U emulation for iPhone and iPad, built from commit 1cf16d6e8c4ddec5afc82b3e7b6b4932308198e6.\n\n**`MuffinEMU.ipa`** - SideStore / AltStore / LiveContainer. Unsigned; they re-sign\nwith your own Apple ID at install.\n\n**`MuffinEMU-fakesigned.ipa`** - TrollStore or jailbroken only, with the JIT\nentitlements embedded.\n\nThe recompiler needs a JIT enabler (StikJIT, SideStore, LiveContainer) and the\n\"Use the recompiler (JIT)\" switch in Settings; without both it runs the\ninterpreter. `MuffinEMU.app.dSYM.zip` is only needed to symbolicate a crash report.\n\nMuffinEMU is built on Cemu. Some MeloCafe cores and bug fixes have been brought over to MuffinEMU.\n\n**Full changelog**: https://github.com/hexabidecimal-star/Hexa-s-MuffinEMU-/compare/v2.0...v2.1",
+          "downloadURL": "https://github.com/hexabidecimal-star/Hexa-s-MuffinEMU-/releases/download/v2.1/MuffinEMU-fakesigned.ipa",
+          "size": 68081142,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "2.0",
           "date": "2026-09-18T01:28:00Z",
           "localizedDescription": "## What changed\n\n- Fixes MuffinEMU not appearing in StikDebug and other JIT enablers, which stopped the recompiler working at all in 4.5 and 4.6.\n- Settings > Preview: New Pad System now actually works - its buttons reach the game instead of releasing themselves the instant they are pressed.\n\nMuffinEMU, Wii U emulation for iPhone and iPad, built from commit f9be058e51279887868476090e2105bea26ececb.\n\n**`MuffinEMU.ipa`** - SideStore / AltStore / LiveContainer. Unsigned; they re-sign\nwith your own Apple ID at install.\n\n**`MuffinEMU-fakesigned.ipa`** - TrollStore or jailbroken only, with the JIT\nentitlements embedded.\n\nThe recompiler needs a JIT enabler (StikJIT, SideStore, LiveContainer) and the\n\"Use the recompiler (JIT)\" switch in Settings; without both it runs the\ninterpreter. `MuffinEMU.app.dSYM.zip` is only needed to symbolicate a crash report.\n\nMuffinEMU is built on Cemu. Some MeloCafe cores and bug fixes have been brought over to MuffinEMU.\n\n**Full changelog**: https://github.com/hexabidecimal-star/Hexa-s-MuffinEMU-/compare/v1.9...v2.0",

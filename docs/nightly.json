@@ -21,9 +21,9 @@
         {
           "version": "2026.9.17",
           "date": "2026-09-17T06:28:46Z",
-          "localizedDescription": "The newest build of MuffinEMU, from commit f9be058e51279887868476090e2105bea26ececb on `main`.\n\nThis tag moves. It is replaced by every successful build, so the download\nhere is always the newest code and never a version you can come back to -\nfor that, use a numbered release.\n\nUntested by anyone. A numbered release has at least been installed and run;\nthis has only been compiled. If you want the version that works, not the\nversion that is newest, install the latest numbered release instead.",
+          "localizedDescription": "The newest build of MuffinEMU, from commit 1cf16d6e8c4ddec5afc82b3e7b6b4932308198e6 on `main`.\n\nThis tag moves. It is replaced by every successful build, so the download\nhere is always the newest code and never a version you can come back to -\nfor that, use a numbered release.\n\nUntested by anyone. A numbered release has at least been installed and run;\nthis has only been compiled. If you want the version that works, not the\nversion that is newest, install the latest numbered release instead.",
           "downloadURL": "https://github.com/hexabidecimal-star/Hexa-s-MuffinEMU-/releases/download/nightly/MuffinEMU.ipa",
-          "size": 67707344,
+          "size": 67709844,
           "minOSVersion": "15.0"
         }
       ],
