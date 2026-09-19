@@ -1,0 +1,129 @@
+diff --git a/src/Cafe/OS/libs/coreinit/coreinit_Atomic.cpp b/src/Cafe/OS/libs/coreinit/coreinit_Atomic.cpp
+index accce552..1073c9ff 100644
+--- a/src/Cafe/OS/libs/coreinit/coreinit_Atomic.cpp
++++ b/src/Cafe/OS/libs/coreinit/coreinit_Atomic.cpp
+@@ -47,8 +47,40 @@ namespace coreinit
+ 
+ 	/* 64bit atomic operations */
+ 
++	// A guest pointer only has to be 4-byte aligned for these: the console's PowerPC has no
++	// 64-bit atomic instruction, so coreinit implements them with a lock and alignment never
++	// mattered. std::atomic<uint64> is fine with that on x86, but on AArch64 it compiles to
++	// exclusive load/store instructions that FAULT on a misaligned address (SIGBUS, seen on
++	// device in Angry Birds Star Wars, which passes a 4-byte-aligned counter to OSSetAtomic64).
++	// Serialise the misaligned case behind a lock and do a plain read-modify-write instead.
++	static std::mutex s_unalignedAtomic64Mutex;
++
++	inline bool IsAtomic64Aligned(const void* mem)
++	{
++		return (reinterpret_cast<uintptr_t>(mem) & 7) == 0;
++	}
++
++	inline uint64be LoadUnaligned64(const std::atomic<uint64be>* mem)
++	{
++		uint64be value;
++		std::memcpy(&value, mem, sizeof(value));
++		return value;
++	}
++
++	inline void StoreUnaligned64(std::atomic<uint64be>* mem, uint64be value)
++	{
++		std::memcpy(mem, &value, sizeof(value));
++	}
++
+ 	uint64 OSSwapAtomic64(std::atomic<uint64be>* mem, uint64 newValue)
+ 	{
++		if (!IsAtomic64Aligned(mem))
++		{
++			std::lock_guard lock(s_unalignedAtomic64Mutex);
++			const uint64be previous = LoadUnaligned64(mem);
++			StoreUnaligned64(mem, newValue);
++			return previous;
++		}
+ 		uint64be _newValue = newValue;
+ 		uint64be previousValue = mem->exchange(_newValue);
+ 		return previousValue;
+@@ -61,11 +93,23 @@ namespace coreinit
+ 
+ 	uint64 OSGetAtomic64(std::atomic<uint64be>* mem)
+ 	{
++		if (!IsAtomic64Aligned(mem))
++		{
++			std::lock_guard lock(s_unalignedAtomic64Mutex);
++			return LoadUnaligned64(mem);
++		}
+ 		return mem->load();
+ 	}
+ 
+ 	uint64 OSAddAtomic64(std::atomic<uint64be>* mem, uint64 adder)
+ 	{
++		if (!IsAtomic64Aligned(mem))
++		{
++			std::lock_guard lock(s_unalignedAtomic64Mutex);
++			const uint64be previous = LoadUnaligned64(mem);
++			StoreUnaligned64(mem, previous + adder);
++			return previous;
++		}
+ 		uint64be knownValue;
+ 		while (true)
+ 		{
+@@ -79,6 +123,13 @@ namespace coreinit
+ 
+ 	uint64 OSAndAtomic64(std::atomic<uint64be>* mem, uint64 val)
+ 	{
++		if (!IsAtomic64Aligned(mem))
++		{
++			std::lock_guard lock(s_unalignedAtomic64Mutex);
++			const uint64be previous = LoadUnaligned64(mem);
++			StoreUnaligned64(mem, previous & val);
++			return previous;
++		}
+ 		uint64be knownValue;
+ 		while (true)
+ 		{
+@@ -92,6 +143,13 @@ namespace coreinit
+ 
+ 	uint64 OSOrAtomic64(std::atomic<uint64be>* mem, uint64 val)
+ 	{
++		if (!IsAtomic64Aligned(mem))
++		{
++			std::lock_guard lock(s_unalignedAtomic64Mutex);
++			const uint64be previous = LoadUnaligned64(mem);
++			StoreUnaligned64(mem, previous | val);
++			return previous;
++		}
+ 		uint64be knownValue;
+ 		while (true)
+ 		{
+@@ -105,6 +163,14 @@ namespace coreinit
+ 
+ 	bool OSCompareAndSwapAtomic64(std::atomic<uint64be>* mem, uint64 compareValue, uint64 swapValue)
+ 	{
++		if (!IsAtomic64Aligned(mem))
++		{
++			std::lock_guard lock(s_unalignedAtomic64Mutex);
++			if (LoadUnaligned64(mem) != (uint64be)compareValue)
++				return false;
++			StoreUnaligned64(mem, swapValue);
++			return true;
++		}
+ 		uint64be _compareValue = compareValue;
+ 		uint64be _swapValue = swapValue;
+ 		return mem->compare_exchange_strong(_compareValue, _swapValue);
+@@ -112,6 +178,16 @@ namespace coreinit
+ 
+ 	bool OSCompareAndSwapAtomicEx64(std::atomic<uint64be>* mem, uint64 compareValue, uint64 swapValue, uint64be* previousValue)
+ 	{
++		if (!IsAtomic64Aligned(mem))
++		{
++			std::lock_guard lock(s_unalignedAtomic64Mutex);
++			const uint64be previous = LoadUnaligned64(mem);
++			*previousValue = previous;
++			if (previous != (uint64be)compareValue)
++				return false;
++			StoreUnaligned64(mem, swapValue);
++			return true;
++		}
+ 		uint64be _compareValue = compareValue;
+ 		uint64be _swapValue = swapValue;
+ 		bool r = mem->compare_exchange_strong(_compareValue, _swapValue);
